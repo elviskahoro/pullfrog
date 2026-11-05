@@ -165,6 +165,10 @@ export interface ToolState {
   // the checkoutSha that report_progress's `no_review_needed` declared needs no review —
   // IncrementalReview's non-substantive exit, which carries the prior verdict forward.
   noReviewNeededSha?: string | undefined;
+  // the sha of the newest commit this run pushed with push_branch. a run that pushes
+  // moves the PR head past the sha any verdict covers, so reportStatusChecks carries a
+  // prior rejection onto it instead of leaving the required check unreported.
+  pushedHeadSha?: string | undefined;
   // dedupe key: parent review comment_id → most-recent reply written this
   // session by reply_to_review_comment. used by duplicateReplyDecision to
   // skip identical-body re-emissions of the same call (PR #610 root cause).

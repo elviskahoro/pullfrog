@@ -556,6 +556,7 @@ export function PushBranchTool(ctx: ToolContext) {
       }
 
       const pushedSha = $("git", ["rev-parse", "HEAD"], { cwd, log: false }).trim();
+      ctx.toolState.pushedHeadSha = pushedSha;
       log.info(
         `» pushed branch ${branch} to ${pushDest.remoteName}/${pushDest.remoteBranch} (sha ${pushedSha})`
       );
