@@ -4,6 +4,7 @@ import { reportReviewNodeId } from "../mcp/review.ts";
 import type { ToolContext } from "../mcp/server.ts";
 import { primaryRepoState } from "../toolState.ts";
 import { log } from "./cli.ts";
+import { isPullfrog } from "./isPullfrog.ts";
 import { retryTransientOctokit } from "./isTransientNetworkError.ts";
 import { patchWorkflowRunFields } from "./patchWorkflowRunFields.ts";
 
@@ -35,6 +36,14 @@ export async function postReviewCleanup(ctx: ToolContext): Promise<void> {
         "follow-up re-review dispatch"
       );
     }
+    // a run that pushed commits without reviewing them (an autofix) leaves the new head with no
+    // review, and nothing else re-reviews a bot push. see `dispatchReReviewAfterPush`.
+    if (ctx.toolState.pushedHeadSha && checkoutSha) {
+      await bestEffort(
+        () => dispatchReReviewAfterPush(ctx, checkoutSha),
+        "post-push re-review dispatch"
+      );
+    }
     return;
   }
   delete ctx.toolState.review;
@@ -49,6 +58,41 @@ export async function postReviewCleanup(ctx: ToolContext): Promise<void> {
       "follow-up re-review dispatch"
     );
   }
+}
+
+/**
+ * consecutive trailing Pullfrog commits at which an autofix stops being re-reviewed. each
+ * autofix push dispatches a re-review, and a re-review that rejects again triggers the next
+ * autofix: without a bound that is a review/fix loop that burns runs until someone notices.
+ */
+export const MAX_AUTOFIX_CHAIN = 3;
+
+/**
+ * re-review the head an autofix run pushed. only when the repo gates on `pullfrog-approval`
+ * (otherwise nobody is waiting on a verdict) and the run was not itself a re-review, which
+ * `postReviewCleanup` already covers. `startSha` is the head the run checked out.
+ */
+export async function dispatchReReviewAfterPush(ctx: ToolContext, startSha: string): Promise<void> {
+  const event = ctx.payload.event;
+  if (!ctx.payload.approvalCheck || event.is_pr !== true) return;
+  if (ctx.toolState.selectedMode === "IncrementalReview") return;
+  const pushedSha = ctx.toolState.pushedHeadSha;
+  if (!pushedSha || pushedSha === startSha) return;
+
+  const commits = await ctx.octokit.rest.repos.listCommits({
+    owner: ctx.repo.owner,
+    repo: ctx.repo.name,
+    sha: pushedSha,
+    per_page: MAX_AUTOFIX_CHAIN,
+  });
+  const chain = commits.data.length;
+  if (chain >= MAX_AUTOFIX_CHAIN && commits.data.every((c) => isPullfrog(c.author?.login))) {
+    log.warning(
+      `autofix chain: the last ${MAX_AUTOFIX_CHAIN} commits are all Pullfrog's — not re-reviewing, to avoid a review/fix loop`
+    );
+    return;
+  }
+  await dispatchFollowUpReReview(ctx, startSha);
 }
 
 async function bestEffort(fn: () => Promise<unknown>, label: string): Promise<void> {
