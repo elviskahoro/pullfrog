@@ -70,8 +70,11 @@ export async function reportStatusChecks(
       .catch((err) => log.debug(`status checks: ${RUN_STATUS_CHECK_NAME} finalize failed: ${err}`));
   }
 
-  // a re-review that submits no review records no verdict of its own.
-  const carriesApproval = !approval && ctx.toolState.selectedMode === "IncrementalReview";
+  // a re-review that submits no review records no verdict of its own, and neither does a
+  // run that pushed commits (an autofix): both leave the head without a verdict.
+  const pushedSha = ctx.toolState.pushedHeadSha;
+  const carriesApproval =
+    !approval && (ctx.toolState.selectedMode === "IncrementalReview" || pushedSha !== undefined);
   // everything below needs a head sha, which costs an API call — skip it when there is
   // nothing left to post.
   const needsApprovalCheck =
@@ -115,7 +118,7 @@ export async function reportStatusChecks(
 
   const verdict = approval
     ? { wouldApprove: approval.wouldApprove, sha: approval.sha ?? headSha, carriedLine: "" }
-    : await carriedApproval(ctx, pullNumber).catch((err) => {
+    : await carriedApproval(ctx, pullNumber, pushedSha).catch((err) => {
         log.debug(`status checks: ${APPROVAL_CHECK_NAME} carry-forward failed: ${err}`);
         return undefined;
       });
@@ -153,8 +156,11 @@ export async function reportStatusChecks(
  * (`no_review_needed`) and no Pullfrog finding is open: a run blocked mid-review also ends
  * on `report_progress`, so ending there proves nothing.
  */
-async function carriedApproval(ctx: ToolContext, pullNumber: number) {
+async function carriedApproval(ctx: ToolContext, pullNumber: number, pushedSha?: string) {
   const primary = primaryRepoState(ctx.toolState);
+  if (pushedSha !== undefined && ctx.toolState.selectedMode !== "IncrementalReview") {
+    return carriedRejectionAfterPush(ctx, primary.checkoutSha, pushedSha);
+  }
   if (!primary.beforeSha || !primary.checkoutSha) return undefined;
   // never shadow a verdict a concurrent review already posted on this commit.
   if ((await latestApprovalConclusion(ctx, primary.checkoutSha)) !== undefined) return undefined;
@@ -170,6 +176,29 @@ async function carriedApproval(ctx: ToolContext, pullNumber: number) {
     wouldApprove: (await countOutstandingPullfrogThreads(ctx, pullNumber)) === 0,
     sha: primary.checkoutSha,
     carriedLine: `\n\nPullfrog found nothing to review in the commits since ${from}.`,
+  };
+}
+
+/**
+ * the verdict for a run that pushed commits without reviewing them. an autofix triggered by a
+ * failing `pullfrog-approval` pushes a new head, and nothing re-reviews a bot push, so the
+ * required check sat on "Expected — Waiting for status to be reported" forever. a rejection on
+ * the commit the run started from carries onto the pushed head, so the block is visible and a
+ * re-review clears it. an approval never carries: the pushed code was reviewed by nobody.
+ */
+async function carriedRejectionAfterPush(
+  ctx: ToolContext,
+  fromSha: string | undefined,
+  pushedSha: string
+) {
+  if (!fromSha || fromSha === pushedSha) return undefined;
+  if ((await latestApprovalConclusion(ctx, pushedSha)) !== undefined) return undefined;
+  const prior = await latestApprovalConclusion(ctx, fromSha);
+  if (prior === undefined || prior === "success") return undefined;
+  return {
+    wouldApprove: false,
+    sha: pushedSha,
+    carriedLine: `\n\nThis run pushed commits that no review covered, so the verdict on ${fromSha.slice(0, 7)} carries forward. Request a re-review to clear it.`,
   };
 }
 
