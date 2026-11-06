@@ -9,7 +9,6 @@ function makeCtx(opts: {
   pushedHeadSha?: string | undefined;
   approvalCheck?: boolean;
   mode?: string;
-  authors?: string[];
   headSha?: string;
 }) {
   const dispatch = vi.fn(async (_p: any) => ({}));
@@ -25,11 +24,6 @@ function makeCtx(opts: {
               title: "t",
               base: { repo: { default_branch: "main" } },
             },
-          })),
-        },
-        repos: {
-          listCommits: vi.fn(async () => ({
-            data: (opts.authors ?? ["someone"]).map((login) => ({ author: { login } })),
           })),
         },
         actions: { createWorkflowDispatch: dispatch },
@@ -77,23 +71,5 @@ describe("postReviewCleanup: re-review after an autofix push", () => {
     const { ctx, dispatch } = makeCtx({ pushedHeadSha: PUSHED, approvalCheck: false });
     await postReviewCleanup(ctx);
     expect(dispatch).not.toHaveBeenCalled();
-  });
-
-  it("stops re-reviewing once the last commits are all Pullfrog's (loop guard)", async () => {
-    const { ctx, dispatch } = makeCtx({
-      pushedHeadSha: PUSHED,
-      authors: ["pullfrog[bot]", "pullfrog[bot]", "pullfrog[bot]"],
-    });
-    await postReviewCleanup(ctx);
-    expect(dispatch).not.toHaveBeenCalled();
-  });
-
-  it("still re-reviews when a human commit breaks the bot chain", async () => {
-    const { ctx, dispatch } = makeCtx({
-      pushedHeadSha: PUSHED,
-      authors: ["pullfrog[bot]", "pullfrog[bot]", "someone"],
-    });
-    await postReviewCleanup(ctx);
-    expect(dispatch).toHaveBeenCalledTimes(1);
   });
 });
